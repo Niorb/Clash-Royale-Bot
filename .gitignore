@@ -8,7 +8,6 @@ __pycache__/
 #Gemini
 .gemini
 GEMINI.md
-
 # C extensions
 *.so
 
