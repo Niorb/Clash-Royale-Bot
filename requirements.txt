@@ -1,0 +1,7 @@
+gymnasium==1.2.3
+numpy>=2.0.0
+stable-baselines3==2.5.0
+matplotlib>=3.10.0
+shimmy>=2.0.0
+# Add PyTorch specifically for Stable Baselines3
+torch>=2.0.0
