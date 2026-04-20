@@ -14,41 +14,57 @@ def train():
     os.makedirs("models", exist_ok=True)
     os.makedirs("logs", exist_ok=True)
 
-    # 2. Initialize Models
+    # 2. Initialize or Load Models
     # We create two separate models for Player 0 and Player 1
-    # Initially they have no opponent model (opponent_model=None)
-
-    # Simple base environment for initializing models
     base_pz = ClashRoyalePZ()
-
-    # Policy kwargs to make them robust
     policy_kwargs = dict(net_arch=[128, 128])
+    model_0_path = "models/ppo_p0.zip"
+    model_1_path = "models/ppo_p1.zip"
 
-    print("Initializing models...")
-    model_0 = PPO(
-        "MlpPolicy",
-        OpponentWrapper(base_pz, "player_0"),
-        verbose=0,
-        learning_rate=3e-4,
-        ent_coef=0.01,
-        policy_kwargs=policy_kwargs,
-        tensorboard_log="./logs/player_0",
-        device="cpu",
-    )
+    if os.path.exists(model_0_path) and os.path.exists(model_1_path):
+        print("Found existing models. Resuming training...")
+        model_0 = PPO.load(
+            model_0_path,
+            env=OpponentWrapper(base_pz, "player_0"),
+            device="cpu",
+            custom_objects={"tensorboard_log": "./logs/player_0"},
+            gamma=0.995,
+        )
+        model_1 = PPO.load(
+            model_1_path,
+            env=OpponentWrapper(base_pz, "player_1"),
+            device="cpu",
+            custom_objects={"tensorboard_log": "./logs/player_1"},
+            gamma=0.995,
+        )
+    else:
+        print("No existing models found. Initializing fresh models...")
+        model_0 = PPO(
+            "MlpPolicy",
+            OpponentWrapper(base_pz, "player_0"),
+            verbose=0,
+            learning_rate=3e-4,
+            gamma=0.995,
+            ent_coef=0.01,
+            policy_kwargs=policy_kwargs,
+            tensorboard_log="./logs/player_0",
+            device="cpu",
+        )
 
-    model_1 = PPO(
-        "MlpPolicy",
-        OpponentWrapper(base_pz, "player_1"),
-        verbose=0,
-        learning_rate=3e-4,
-        ent_coef=0.01,
-        policy_kwargs=policy_kwargs,
-        tensorboard_log="./logs/player_1",
-        device="cpu",
-    )
+        model_1 = PPO(
+            "MlpPolicy",
+            OpponentWrapper(base_pz, "player_1"),
+            verbose=0,
+            learning_rate=3e-4,
+            gamma=0.995,
+            ent_coef=0.01,
+            policy_kwargs=policy_kwargs,
+            tensorboard_log="./logs/player_1",
+            device="cpu",
+        )
 
     # 3. Iterative Training Loop
-    generations = 5  # Number of times we switch training
+    generations = 10  # Number of times we switch training
     steps_per_gen = 40000  # steps per agent per generation
 
     print(

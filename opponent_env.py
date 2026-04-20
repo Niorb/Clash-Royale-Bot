@@ -26,19 +26,16 @@ class OpponentWrapper(gym.Env):
         return obs_dict[self.learning_agent_id], infos[self.learning_agent_id]
 
     def step(self, action):
-        # 1. Get Opponent's action if model is available, otherwise Nothing (0)
-        opp_action = 0
+        # 1. Get Opponent's action if model is available, otherwise Nothing ([0, 0, 0])
+        opp_action = [0, 0, 0]
         if self.opponent_model:
             # Predict the opponent's move using their observation
             opp_obs = self.last_obs[self.opponent_id]
             opp_action, _ = self.opponent_model.predict(opp_obs, deterministic=True)
-            
+
         # 2. Package actions for PettingZoo
-        actions = {
-            self.learning_agent_id: action,
-            self.opponent_id: int(opp_action)
-        }
-        
+        actions = {self.learning_agent_id: action, self.opponent_id: opp_action}
+
         # 3. Step the environment
         obs_dict, rewards, terminations, truncations, infos = self.env.step(actions)
         self.last_obs = obs_dict
