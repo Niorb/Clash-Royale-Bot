@@ -23,13 +23,14 @@ Our strategy follows the path of industry leaders like **DeepMind (AlphaStar)** 
 ## 🏗️ Architecture
 
 ### 1. Headless Simulator (`/`)
-A custom-built `gymnasium` environment that replicates Clash Royale mechanics:
-- **State Representation**: Vectorized game state (Elixir, Tower HP, Unit positions/health).
-- **Action Space**: Discrete deployment decisions.
-- **Physics**: Simplified 1D/2D combat logic with pathfinding and engagement ranges.
+A custom-built `PettingZoo` and `gymnasium` environment that replicates Clash Royale mechanics:
+- **Arena**: 18x30 2D grid with river, bridges, and pathfinding.
+- **State Representation**: 103-dimensional vectorized game state (Elixir, Tower HP, Troop/Building positions/health).
+- **Action Space**: `MultiDiscrete([9, 18, 30])` (Unit Type, X, Y).
+- **Physics**: 2D combat logic with engagement ranges, flying unit support, and collision enforcement.
 
 ### 2. Reinforcement Learning Pipeline
-Utilizes **PPO (Proximal Policy Optimization)** via Stable Baselines3 to train robust strategies through self-play and randomized scenarios.
+Utilizes **PPO (Proximal Policy Optimization)** via Stable Baselines3 to train robust strategies through **Iterative Co-Evolution** (alternating training between Player 0 and Player 1).
 
 ---
 
@@ -48,31 +49,38 @@ pip install -r requirements.txt
 
 ## 📈 Current Progress
 
-- [x] **Core Game Objects**: `Tower` and `Troop` logic with combat math.
-- [x] **Gym Environment**: Functional `ClashRoyaleEnv` wrapper.
-- [x] **Verification**: Simulator successfully running with random agents.
-- [ ] **Baseline Agent**: Training the first PPO agent on the 1-lane simulator.
-- [ ] **Multi-Card Support**: Expanding the simulator to include spells and ranged units.
+- [x] **2D Arena Simulator**: 18x30 grid with river/bridge logic.
+- [x] **Multi-Card Support**: Knight, Archer, Minion, Giant, PEKKA, Skeletons, etc.
+- [x] **Spell & Building Support**: Fireball and Cannon logic.
+- [x] **PettingZoo Environment**: Functional `ClashRoyalePZ` for multi-agent training.
+- [x] **Co-Evolution Training**: `train.py` for alternating self-play training.
+- [x] **Pygame Visualizer**: `visualize_env.py` for real-time 2D monitoring.
+- [ ] **Advanced Reward Shaping**: Elixir efficiency and tower pressure refinement.
 - [ ] **Vision System**: YOLOv8 implementation for unit tracking.
 
 ---
 
 ## 🎮 Usage
 
-To run a test of the current simulator logic with a random agent:
-
+To train the agents using co-evolution:
 ```bash
-python test_env.py
+python train.py
+```
+
+To watch the trained agents battle in the 2D arena:
+```bash
+python visualize_env.py
 ```
 
 ---
 
 ## 📜 Roadmap & Lessons Learned
 
-Detailed documentation of our architectural decisions and "Sim-to-Real" strategies are maintained in our project knowledge base, focusing on:
-- Efficient state vectorization for RL.
-- Domain randomization to handle computer vision "noise."
-- Reward shaping for positive elixir trades and tower pressure.
+Detailed documentation of our architectural decisions and "Sim-to-Real" strategies are maintained in our project knowledge base (Obsidian Vault), focusing on:
+- 2D grid navigation and bridge pathfinding.
+- Efficient state vectorization (103-dimensional observation).
+- Iterative training to prevent strategy stagnation.
+
 
 ---
 

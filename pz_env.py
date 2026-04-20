@@ -5,8 +5,15 @@ import numpy as np
 from gymnasium import spaces
 from pettingzoo import ParallelEnv
 
-from card_stats import SPELL_STATS, TOWER_STATS, TROOP_STATS, TROOP_TYPE_MAP
-from game_objects import Tower, Troop
+from card_stats import (
+    BUILDING_STATS,
+    BUILDING_TYPE_MAP,
+    SPELL_STATS,
+    TOWER_STATS,
+    TROOP_STATS,
+    TROOP_TYPE_MAP,
+)
+from game_objects import Building, Tower, Troop
 
 
 class ClashRoyalePZ(ParallelEnv):
@@ -19,23 +26,25 @@ class ClashRoyalePZ(ParallelEnv):
         self.agents = self.possible_agents[:]
 
         self.arena_width = 18.0
-        self.arena_height = 32.0
+        self.arena_height = 30.0
 
         # Action: [type, x, y]
-        # type: 0 - Nothing, 1 - Knight, 2 - Archer, 3 - Fireball
+        # type: 0 - Nothing, 1 - Knight, 2 - Archer, 3 - Fireball, 4 - Minion, 5 - Giant, 6 - Cannon, 7 - Baby Dragon, 8 - Musketeer
         # x: 0 to 17
-        # y: 0 to 31
+        # y: 0 to 29
         self.action_spaces = {
-            agent: spaces.MultiDiscrete([4, 18, 32]) for agent in self.possible_agents
+            agent: spaces.MultiDiscrete([9, 18, 30]) for agent in self.possible_agents
         }
 
         # Observation Space:
         # [elixir, self_king_hp, self_l_hp, self_r_hp, enemy_king_hp, enemy_l_hp, enemy_r_hp,
         #  self_t1_type, self_t1_x, self_t1_y, self_t1_hp, ... (x10)
-        #  enemy_t1_type, enemy_t1_x, enemy_t1_y, enemy_t1_hp] ... (x10)
-        # Total: 1 + 3 + 3 + (10 * 4) + (10 * 4) = 87
+        #  enemy_t1_type, enemy_t1_x, enemy_t1_y, enemy_t1_hp, ... (x10)
+        #  self_b1_type, self_b1_x, self_b1_y, self_b1_hp, ... (x2)
+        #  enemy_b1_type, enemy_b1_x, enemy_b1_y, enemy_b1_hp] ... (x2)
+        # Total: 1 + 3 + 3 + (10 * 4) + (10 * 4) + (2 * 4) + (2 * 4) = 103
         self.observation_spaces = {
-            agent: spaces.Box(low=0, high=1, shape=(87,), dtype=np.float32)
+            agent: spaces.Box(low=0, high=1, shape=(103,), dtype=np.float32)
             for agent in self.possible_agents
         }
 
@@ -43,11 +52,43 @@ class ClashRoyalePZ(ParallelEnv):
         self.dt = 0.2
         self.max_steps = 1500
 
-        self.bridge_y = 16.0
-        self.left_bridge_x = 3.5
-        self.right_bridge_x = 14.5
+        self.bridge_y = 15.0
+        self.left_bridge_x = 3.0
+        self.right_bridge_x = 15.0
 
         self.troop_type_map = TROOP_TYPE_MAP
+
+    def action_mask(self, agent):
+        """
+        Returns a boolean mask for the MultiDiscrete action space.
+        Space: [9, 18, 30]
+        Mask size: 9 + 18 + 30 = 57
+        """
+        mask = np.ones(57, dtype=bool)
+        current_elixir = self.elixir[agent]
+
+        # 1. Mask Card Types (0-8) based on Elixir
+        # Index 0 is "Nothing" (always valid)
+        # Type 1: Knight (3), 2: Archer (3), 3: Fireball (4), 4: Minion (3), 5: Giant (5), 6: Cannon (3), 7: BabyDragon (4), 8: Musketeer (4)
+        costs = [0, 3, 3, 4, 3, 5, 3, 4, 4]
+        for i, cost in enumerate(costs):
+            if current_elixir < cost:
+                mask[i] = False
+        
+        # 2. Mask Unit Cap (Cannot spawn if already 10 units)
+        if len(self.troops[agent]) >= 10:
+            for i in [1, 2, 4, 5, 7, 8]: # Troop types
+                mask[i] = False
+        
+        # 3. Mask Building Cap (Cannot spawn if already 2 buildings)
+        if len(self.buildings[agent]) >= 2:
+            mask[6] = False # Cannon
+
+        # Note: We are not masking X and Y here because MultiDiscrete masks are independent 
+        # in each dimension for SB3-Contrib. Masking a Y coordinate would mask it for ALL 
+        # card types, which is incorrect (Spells vs Troops).
+        
+        return mask
 
     def reset(self, seed=None, options=None):
         self.agents = self.possible_agents[:]
@@ -58,14 +99,14 @@ class ClashRoyalePZ(ParallelEnv):
         self.elixir = {"player_0": 5.0, "player_1": 5.0}
 
         # Towers: [King, Left Princess, Right Princess]
-        # Coordinates: Player 0 is bottom (Y=0), Player 1 is top (Y=31)
+        # Coordinates: Player 0 is bottom (Y=0), Player 1 is top (Y=29)
         k_s = TOWER_STATS["king"]
         p_s = TOWER_STATS["princess"]
         self.towers = {
             "player_0": [
                 Tower(
                     0,
-                    (9.0, 0.5),
+                    (9.0, 2.0),
                     "king",
                     health=k_s["health"],
                     attack_damage=k_s["damage"],
@@ -74,7 +115,7 @@ class ClashRoyalePZ(ParallelEnv):
                 ),
                 Tower(
                     0,
-                    (3.5, 3.5),
+                    (3.5, 5.5),
                     "princess",
                     health=p_s["health"],
                     attack_damage=p_s["damage"],
@@ -83,7 +124,7 @@ class ClashRoyalePZ(ParallelEnv):
                 ),
                 Tower(
                     0,
-                    (14.5, 3.5),
+                    (14.5, 5.5),
                     "princess",
                     health=p_s["health"],
                     attack_damage=p_s["damage"],
@@ -94,7 +135,7 @@ class ClashRoyalePZ(ParallelEnv):
             "player_1": [
                 Tower(
                     1,
-                    (9.0, 31.5),
+                    (9.0, 28.0),
                     "king",
                     health=k_s["health"],
                     attack_damage=k_s["damage"],
@@ -103,7 +144,7 @@ class ClashRoyalePZ(ParallelEnv):
                 ),
                 Tower(
                     1,
-                    (14.5, 28.5),
+                    (14.5, 24.5),
                     "princess",
                     health=p_s["health"],
                     attack_damage=p_s["damage"],
@@ -112,7 +153,7 @@ class ClashRoyalePZ(ParallelEnv):
                 ),  # Symmetric
                 Tower(
                     1,
-                    (3.5, 28.5),
+                    (3.5, 24.5),
                     "princess",
                     health=p_s["health"],
                     attack_damage=p_s["damage"],
@@ -122,6 +163,7 @@ class ClashRoyalePZ(ParallelEnv):
             ],
         }
         self.troops = {"player_0": [], "player_1": []}
+        self.buildings = {"player_0": [], "player_1": []}
 
         observations = {agent: self._get_obs(agent) for agent in self.agents}
         infos = {agent: {} for agent in self.agents}
@@ -130,7 +172,7 @@ class ClashRoyalePZ(ParallelEnv):
     def _get_obs(self, agent):
         enemy = "player_1" if agent == "player_0" else "player_0"
         is_p0 = agent == "player_0"
-        obs = np.zeros(87, dtype=np.float32)
+        obs = np.zeros(103, dtype=np.float32)
 
         # 1. Elixir (1)
         obs[0] = self.elixir[agent] / self.max_elixir
@@ -169,6 +211,26 @@ class ClashRoyalePZ(ParallelEnv):
             obs[idx + 2] = ry
             obs[idx + 3] = enemy_troops[i].health / enemy_troops[i].max_health
 
+        # 6. Own Buildings (8)
+        self_buildings = self.buildings[agent]
+        for i in range(min(len(self_buildings), 2)):
+            rx, ry = get_rel_coords(self_buildings[i].position)
+            idx = 87 + i * 4
+            obs[idx] = BUILDING_TYPE_MAP.get(self_buildings[i].name, 0.0)
+            obs[idx + 1] = rx
+            obs[idx + 2] = ry
+            obs[idx + 3] = self_buildings[i].health / self_buildings[i].max_health
+
+        # 7. Enemy Buildings (8)
+        enemy_buildings = self.buildings[enemy]
+        for i in range(min(len(enemy_buildings), 2)):
+            rx, ry = get_rel_coords(enemy_buildings[i].position)
+            idx = 95 + i * 4
+            obs[idx] = BUILDING_TYPE_MAP.get(enemy_buildings[i].name, 0.0)
+            obs[idx + 1] = rx
+            obs[idx + 2] = ry
+            obs[idx + 3] = enemy_buildings[i].health / enemy_buildings[i].max_health
+
         return obs
 
     def step(self, actions):
@@ -180,7 +242,7 @@ class ClashRoyalePZ(ParallelEnv):
         self.current_step += 1
         self.time += self.dt
 
-        # 1. Elixir Regen
+        # 1. Elixir Regen and Building Decay
         for agent in self.possible_agents:
             self.elixir[agent] = min(
                 self.max_elixir, self.elixir[agent] + (self.dt / 2.8)
@@ -188,18 +250,23 @@ class ClashRoyalePZ(ParallelEnv):
             if self.elixir[agent] >= self.max_elixir:
                 rewards[agent] -= 0.01
 
+            for b in self.buildings[agent]:
+                decay_damage = b.max_health * (self.dt / b.lifetime)
+                b.take_damage(decay_damage)
+
         # 2. Process Actions
         for agent, action in actions.items():
             action_type, ax, ay = action
             enemy = "player_1" if agent == "player_0" else "player_0"
 
             # Clamp and convert coordinates
-            # player_0 plays on Y [0, 15], player_1 on Y [17, 31]
-            if action_type in [1, 2]:  # Troops
+            # player_0 plays on Y [0, 13.5], player_1 on Y [16.5, 29]
+            # (Buffer of 0.5 tiles to prevent spawning on the hard river edge)
+            if action_type in [1, 2, 4, 5, 6, 7, 8]:  # Troops and Buildings
                 if agent == "player_0":
-                    actual_y = min(float(ay), 15.0)
+                    actual_y = min(float(ay), 13.5)
                 else:
-                    actual_y = max(float(ay), 17.0)
+                    actual_y = max(float(ay), 16.5)
                 actual_x = float(ax)
             else:  # Spells can be anywhere
                 actual_x, actual_y = float(ax), float(ay)
@@ -224,6 +291,9 @@ class ClashRoyalePZ(ParallelEnv):
                         stats["attack_speed"],
                         actual_pos,
                         stats["cost"],
+                        is_flying=stats["is_flying"],
+                        targets=stats["targets"],
+                        splash_radius=stats.get("splash_radius", 0.0),
                     )
                 )
             elif (
@@ -248,8 +318,129 @@ class ClashRoyalePZ(ParallelEnv):
                             stats["attack_speed"],
                             (spawn_x, actual_y),
                             stats["cost"],
+                            is_flying=stats["is_flying"],
+                            targets=stats["targets"],
+                            splash_radius=stats.get("splash_radius", 0.0),
                         )
                     )
+            elif (
+                action_type == 4
+                and self.elixir[agent] >= TROOP_STATS["Minion"]["cost"]
+                and len(self.troops[agent]) < 10
+            ):
+                stats = TROOP_STATS["Minion"]
+                self.elixir[agent] -= stats["cost"]
+                # Spawn a pack of 3 Minions in a triangle formation
+                offsets = [(0.0, 0.0), (-1.0, -1.0), (1.0, -1.0)]
+                for dx, dy in offsets:
+                    spawn_x = max(0.0, min(self.arena_width, actual_x + dx))
+                    spawn_y = actual_y + dy
+                    self.troops[agent].append(
+                        Troop(
+                            agent,
+                            "Minion",
+                            stats["health"],
+                            stats["damage"],
+                            stats["speed"],
+                            stats["attack_range"],
+                            stats["attack_speed"],
+                            (spawn_x, spawn_y),
+                            stats["cost"],
+                            is_flying=stats["is_flying"],
+                            targets=stats["targets"],
+                            splash_radius=stats.get("splash_radius", 0.0),
+                        )
+                    )
+            elif (
+                action_type == 5
+                and self.elixir[agent] >= TROOP_STATS["Giant"]["cost"]
+                and len(self.troops[agent]) < 10
+            ):
+                stats = TROOP_STATS["Giant"]
+                self.elixir[agent] -= stats["cost"]
+                self.troops[agent].append(
+                    Troop(
+                        agent,
+                        "Giant",
+                        stats["health"],
+                        stats["damage"],
+                        stats["speed"],
+                        stats["attack_range"],
+                        stats["attack_speed"],
+                        actual_pos,
+                        stats["cost"],
+                        is_flying=stats["is_flying"],
+                        targets=stats["targets"],
+                        splash_radius=stats.get("splash_radius", 0.0),
+                    )
+                )
+            elif (
+                action_type == 6
+                and self.elixir[agent] >= BUILDING_STATS["Cannon"]["cost"]
+                and len(self.buildings[agent]) < 2
+            ):
+                stats = BUILDING_STATS["Cannon"]
+                self.elixir[agent] -= stats["cost"]
+                self.buildings[agent].append(
+                    Building(
+                        agent,
+                        "Cannon",
+                        actual_pos,
+                        stats["health"],
+                        stats["damage"],
+                        stats["attack_range"],
+                        stats["attack_speed"],
+                        stats["lifetime"],
+                        stats["cost"],
+                        targets=stats["targets"],
+                    )
+                )
+            elif (
+                action_type == 7
+                and self.elixir[agent] >= TROOP_STATS["BabyDragon"]["cost"]
+                and len(self.troops[agent]) < 10
+            ):
+                stats = TROOP_STATS["BabyDragon"]
+                self.elixir[agent] -= stats["cost"]
+                self.troops[agent].append(
+                    Troop(
+                        agent,
+                        "BabyDragon",
+                        stats["health"],
+                        stats["damage"],
+                        stats["speed"],
+                        stats["attack_range"],
+                        stats["attack_speed"],
+                        actual_pos,
+                        stats["cost"],
+                        is_flying=stats["is_flying"],
+                        targets=stats["targets"],
+                        splash_radius=stats.get("splash_radius", 0.0),
+                    )
+                )
+            elif (
+                action_type == 8
+                and self.elixir[agent] >= TROOP_STATS["Musketeer"]["cost"]
+                and len(self.troops[agent]) < 10
+            ):
+                stats = TROOP_STATS["Musketeer"]
+                self.elixir[agent] -= stats["cost"]
+                self.troops[agent].append(
+                    Troop(
+                        agent,
+                        "Musketeer",
+                        stats["health"],
+                        stats["damage"],
+                        stats["speed"],
+                        stats["attack_range"],
+                        stats["attack_speed"],
+                        actual_pos,
+                        stats["cost"],
+                        is_flying=stats["is_flying"],
+                        targets=stats["targets"],
+                        splash_radius=stats.get("splash_radius", 0.0),
+                    )
+                )
             elif (
                 action_type == 3
                 and self.elixir[agent] >= SPELL_STATS["Fireball"]["cost"]
@@ -270,19 +461,53 @@ class ClashRoyalePZ(ParallelEnv):
                     ):
                         et.take_damage(stats["damage"])
 
-        # 3. Tower Defense Logic (2D)
+        # 3. Tower and Building Defense Logic (2D)
         for agent in self.possible_agents:
             enemy = "player_1" if agent == "player_0" else "player_0"
             enemy_units = [t for t in self.troops[enemy] if t.is_alive()]
 
-            for tower in self.towers[agent]:
+            # Defensive structures: Towers + Buildings
+            defenders = self.towers[agent] + self.buildings[agent]
+
+            for tower in defenders:
                 if not tower.is_alive():
                     continue
 
+                # Check if current target is still valid
+                if (
+                    hasattr(tower, "target")
+                    and tower.target
+                    and tower.target.is_alive()
+                ):
+                    dist = math.hypot(
+                        tower.target.position[0] - tower.position[0],
+                        tower.target.position[1] - tower.position[1],
+                    )
+                    if dist <= tower.attack_range:
+                        # Keep current target if in range
+                        if (self.time - tower.last_attack_time) >= tower.attack_speed:
+                            dmg = (
+                                tower.damage
+                                if hasattr(tower, "damage")
+                                else tower.attack_damage
+                            )
+                            tower.target.take_damage(dmg)
+                            tower.last_attack_time = self.time
+                        continue
+                    else:
+                        tower.target = None
+
                 # Find closest enemy unit
-                if enemy_units:
+                valid_targets = [
+                    u
+                    for u in enemy_units
+                    if (tower.targets == "both")
+                    or (not u.is_flying and tower.targets == "ground")
+                ]
+
+                if valid_targets:
                     target = min(
-                        enemy_units,
+                        valid_targets,
                         key=lambda t: math.hypot(
                             t.position[0] - tower.position[0],
                             t.position[1] - tower.position[1],
@@ -293,12 +518,16 @@ class ClashRoyalePZ(ParallelEnv):
                         target.position[1] - tower.position[1],
                     )
 
-                    if (
-                        dist <= tower.attack_range
-                        and (self.time - tower.last_attack_time) >= tower.attack_speed
-                    ):
-                        target.take_damage(tower.attack_damage)
-                        tower.last_attack_time = self.time
+                    if dist <= tower.attack_range:
+                        tower.target = target  # Lock in target
+                        if (self.time - tower.last_attack_time) >= tower.attack_speed:
+                            dmg = (
+                                tower.damage
+                                if hasattr(tower, "damage")
+                                else tower.attack_damage
+                            )
+                            target.take_damage(dmg)
+                            tower.last_attack_time = self.time
 
         # 4. Movement and Combat (Troops) with Bridge Pathfinding
         for agent in self.possible_agents:
@@ -306,30 +535,65 @@ class ClashRoyalePZ(ParallelEnv):
             is_p0 = agent == "player_0"
 
             for t in self.troops[agent]:
-                # Targets: enemy towers and enemy troops
-                potential_targets = [
-                    et for et in self.troops[enemy] if et.is_alive()
-                ] + [tw for tw in self.towers[enemy] if tw.is_alive()]
+                # Targets: towers, buildings, and optionally troops
+                if t.targets == "building":
+                    potential_targets = [
+                        tw for tw in self.towers[enemy] if tw.is_alive()
+                    ] + [b for b in self.buildings[enemy] if b.is_alive()]
+                else:
+                    potential_targets = (
+                        [
+                            et
+                            for et in self.troops[enemy]
+                            if et.is_alive()
+                            and (t.targets == "both" or not et.is_flying)
+                        ]
+                        + [tw for tw in self.towers[enemy] if tw.is_alive()]
+                        + [b for b in self.buildings[enemy] if b.is_alive()]
+                    )
 
                 if not potential_targets:
+                    t.target = None
                     continue
 
-                target = min(
-                    potential_targets,
-                    key=lambda pt: math.hypot(
-                        pt.position[0] - t.position[0], pt.position[1] - t.position[1]
-                    ),
-                )
+                # Lock-in logic: only keep target if alive AND in range
+                if t.target and t.target.is_alive():
+                    dist_to_current = math.hypot(
+                        t.target.position[0] - t.position[0],
+                        t.target.position[1] - t.position[1],
+                    )
+                    if dist_to_current > t.attack_range:
+                        # Not in range, retarget to closest
+                        t.target = min(
+                            potential_targets,
+                            key=lambda pt: math.hypot(
+                                pt.position[0] - t.position[0],
+                                pt.position[1] - t.position[1],
+                            ),
+                        )
+                    # Else: In range, keep target (lock)
+                else:
+                    # No target or dead, pick closest
+                    t.target = min(
+                        potential_targets,
+                        key=lambda pt: math.hypot(
+                            pt.position[0] - t.position[0],
+                            pt.position[1] - t.position[1],
+                        ),
+                    )
+
+                target = t.target
                 target_pos = target.position
 
                 # Simple Pathfinding: if target is across the river, go to bridge first
-                target_pos = target.position
-                is_across = (
-                    is_p0 and target_pos[1] > 16.0 and t.position[1] < 16.0
-                ) or (not is_p0 and target_pos[1] < 16.0 and t.position[1] > 16.0)
+                # Flying units ignore the river
+                is_across = not t.is_flying and (
+                    (is_p0 and target_pos[1] > 16.0 and t.position[1] < 16.0)
+                    or (not is_p0 and target_pos[1] < 14.0 and t.position[1] > 14.0)
+                )
 
-                # Check if currently in the river corridor
-                in_river_zone = 15.5 <= t.position[1] <= 16.5
+                # Check if currently in the river corridor (Ground units only)
+                in_river_zone = not t.is_flying and (14.0 < t.position[1] < 16.0)
 
                 move_target = target_pos
                 if is_across or in_river_zone:
@@ -345,15 +609,30 @@ class ClashRoyalePZ(ParallelEnv):
                         move_target = (bridge_x, target_pos[1])
                     else:
                         # Move toward bridge entrance
-                        entrance_y = 15.5 if is_p0 else 16.5
-                        move_target = (bridge_x, entrance_y)
+                        entrance_y = 14.0 if is_p0 else 16.0
+                        # If already at bridge X, aim for river center to keep moving
+                        if abs(t.position[0] - bridge_x) < 0.2:
+                            move_target = (bridge_x, 15.0)
+                        else:
+                            move_target = (bridge_x, entrance_y)
 
                 dist = math.hypot(
                     target_pos[0] - t.position[0], target_pos[1] - t.position[1]
                 )
                 if dist <= t.attack_range:
                     if (self.time - t.last_attack_time) >= t.attack_speed:
-                        target.take_damage(t.damage)
+                        if t.splash_radius > 0.0:
+                            for pt in potential_targets:
+                                if (
+                                    math.hypot(
+                                        pt.position[0] - target.position[0],
+                                        pt.position[1] - target.position[1],
+                                    )
+                                    <= t.splash_radius
+                                ):
+                                    pt.take_damage(t.damage)
+                        else:
+                            target.take_damage(t.damage)
                         t.last_attack_time = self.time
                         if isinstance(target, Tower):
                             rewards[agent] += 0.05
@@ -364,29 +643,31 @@ class ClashRoyalePZ(ParallelEnv):
                     old_pos = list(t.position)
                     t.move(self.dt, move_target)
 
-                    # River Collision Enforcement (Hard Block)
-                    tx, ty = t.position
-                    on_bridge = (
-                        abs(tx - self.left_bridge_x) < 0.8
-                        or abs(tx - self.right_bridge_x) < 0.8
-                    )
+                    # River Collision Enforcement (Hard Block) - Only for ground units
+                    if not t.is_flying:
+                        tx, ty = t.position
+                        on_bridge = (
+                            abs(tx - self.left_bridge_x) < 1.0
+                            or abs(tx - self.right_bridge_x) < 1.0
+                        )
 
-                    if 15.5 < ty < 16.5:
-                        if not on_bridge:
-                            # Cannot enter river from the side
-                            t.position = old_pos
-                        else:
-                            # On bridge: Lock X to bridge center to prevent walking on "river" edge
-                            bridge_center_x = (
-                                self.left_bridge_x
-                                if abs(tx - self.left_bridge_x) < 0.8
-                                else self.right_bridge_x
-                            )
-                            t.position[0] = bridge_center_x
+                        if 14.0 < ty < 16.0:
+                            if not on_bridge:
+                                # Cannot enter river from the side
+                                t.position = old_pos
+                            else:
+                                # On bridge: Lock X to bridge center to prevent walking on "river" edge
+                                bridge_center_x = (
+                                    self.left_bridge_x
+                                    if abs(tx - self.left_bridge_x) < 1.0
+                                    else self.right_bridge_x
+                                )
+                                t.position[0] = bridge_center_x
 
-        # 5. Cleanup dead troops
+        # 5. Cleanup dead troops and buildings
         for agent in self.possible_agents:
             self.troops[agent] = [t for t in self.troops[agent] if t.is_alive()]
+            self.buildings[agent] = [b for b in self.buildings[agent] if b.is_alive()]
 
         # 6. Check Terminations and Truncations
         win_reward = 10.0

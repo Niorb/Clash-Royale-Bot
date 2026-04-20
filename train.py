@@ -2,11 +2,18 @@ import os
 
 import gymnasium as gym
 import numpy as np
-from stable_baselines3 import PPO
+from sb3_contrib import MaskablePPO
+from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.env_util import make_vec_env
 
 from opponent_env import OpponentWrapper
 from pz_env import ClashRoyalePZ
+
+
+def make_masked_env(pz_env, agent_id, opponent_model=None):
+    env = OpponentWrapper(pz_env, agent_id, opponent_model=opponent_model)
+    env = ActionMasker(env, lambda e: e.action_masks())
+    return env
 
 
 def train():
@@ -17,31 +24,39 @@ def train():
     # 2. Initialize or Load Models
     # We create two separate models for Player 0 and Player 1
     base_pz = ClashRoyalePZ()
-    policy_kwargs = dict(net_arch=[128, 128])
+    policy_kwargs = dict(net_arch=[512, 128])
     model_0_path = "models/ppo_p0.zip"
     model_1_path = "models/ppo_p1.zip"
 
     if os.path.exists(model_0_path) and os.path.exists(model_1_path):
-        print("Found existing models. Resuming training...")
-        model_0 = PPO.load(
-            model_0_path,
-            env=OpponentWrapper(base_pz, "player_0"),
-            device="cpu",
-            custom_objects={"tensorboard_log": "./logs/player_0"},
-            gamma=0.995,
-        )
-        model_1 = PPO.load(
-            model_1_path,
-            env=OpponentWrapper(base_pz, "player_1"),
-            device="cpu",
-            custom_objects={"tensorboard_log": "./logs/player_1"},
-            gamma=0.995,
-        )
-    else:
-        print("No existing models found. Initializing fresh models...")
-        model_0 = PPO(
+        print("Found existing models. Resuming training with MaskablePPO...")
+        # Note: Loading a standard PPO model as MaskablePPO might require caution.
+        # If it fails, we might need to initialize fresh or use a conversion script.
+        try:
+            model_0 = MaskablePPO.load(
+                model_0_path,
+                env=make_masked_env(base_pz, "player_0"),
+                device="cpu",
+                custom_objects={"tensorboard_log": "./logs/player_0"},
+                gamma=0.995,
+            )
+            model_1 = MaskablePPO.load(
+                model_1_path,
+                env=make_masked_env(base_pz, "player_1"),
+                device="cpu",
+                custom_objects={"tensorboard_log": "./logs/player_1"},
+                gamma=0.995,
+            )
+        except Exception as e:
+            print(f"Failed to load existing models as MaskablePPO: {e}")
+            print("Initializing fresh MaskablePPO models instead.")
+            model_0 = None
+            model_1 = None
+
+    if 'model_0' not in locals() or model_0 is None:
+        model_0 = MaskablePPO(
             "MlpPolicy",
-            OpponentWrapper(base_pz, "player_0"),
+            make_masked_env(base_pz, "player_0"),
             verbose=0,
             learning_rate=3e-4,
             gamma=0.995,
@@ -51,9 +66,9 @@ def train():
             device="cpu",
         )
 
-        model_1 = PPO(
+        model_1 = MaskablePPO(
             "MlpPolicy",
-            OpponentWrapper(base_pz, "player_1"),
+            make_masked_env(base_pz, "player_1"),
             verbose=0,
             learning_rate=3e-4,
             gamma=0.995,
@@ -68,7 +83,7 @@ def train():
     steps_per_gen = 40000  # steps per agent per generation
 
     print(
-        f"Starting Alternating Training: {generations} generations of {steps_per_gen} steps each."
+        f"Starting Alternating Training with Action Masking: {generations} generations of {steps_per_gen} steps each."
     )
 
     for gen in range(generations):
@@ -83,7 +98,7 @@ def train():
         # --- Phase A: Train Player 0 against Player 1 ---
         print(f"Phase A: Training Player 0 (Opponent: Player 1 Version {gen})")
         # Create a fresh wrapped env with the latest version of the opponent
-        env_p0 = OpponentWrapper(ClashRoyalePZ(), "player_0", opponent_model=model_1)
+        env_p0 = make_masked_env(ClashRoyalePZ(), "player_0", opponent_model=model_1)
         model_0.set_env(env_p0)
         model_0.learn(total_timesteps=num_steps_gen_0, reset_num_timesteps=False)
         model_0.save(f"models/ppo_p0_gen{gen + 1}")
@@ -92,7 +107,7 @@ def train():
         # --- Phase B: Train Player 1 against Player 0 ---
         print(f"Phase B: Training Player 1 (Opponent: Player 0 Version {gen + 1})")
         # Create a fresh wrapped env with the latest version of Player 0
-        env_p1 = OpponentWrapper(ClashRoyalePZ(), "player_1", opponent_model=model_0)
+        env_p1 = make_masked_env(ClashRoyalePZ(), "player_1", opponent_model=model_0)
         model_1.set_env(env_p1)
         model_1.learn(total_timesteps=steps_per_gen, reset_num_timesteps=False)
         model_1.save(f"models/ppo_p1_gen{gen + 1}")

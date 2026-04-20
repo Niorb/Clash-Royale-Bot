@@ -20,6 +20,9 @@ class OpponentWrapper(gym.Env):
         
         self.last_obs = None
 
+    def action_masks(self):
+        return self.env.action_mask(self.learning_agent_id)
+
     def reset(self, seed=None, options=None):
         obs_dict, infos = self.env.reset(seed=seed, options=options)
         self.last_obs = obs_dict
@@ -31,7 +34,13 @@ class OpponentWrapper(gym.Env):
         if self.opponent_model:
             # Predict the opponent's move using their observation
             opp_obs = self.last_obs[self.opponent_id]
-            opp_action, _ = self.opponent_model.predict(opp_obs, deterministic=True)
+            # Use action masking for opponent if supported by the model
+            try:
+                opp_mask = self.env.action_mask(self.opponent_id)
+                opp_action, _ = self.opponent_model.predict(opp_obs, action_masks=opp_mask, deterministic=True)
+            except (AttributeError, TypeError):
+                # Fallback for models that don't support action_masks in predict
+                opp_action, _ = self.opponent_model.predict(opp_obs, deterministic=True)
 
         # 2. Package actions for PettingZoo
         actions = {self.learning_agent_id: action, self.opponent_id: opp_action}

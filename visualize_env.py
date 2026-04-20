@@ -10,11 +10,11 @@ from pz_env import ClashRoyalePZ
 
 # Constants
 ARENA_WIDTH = 18
-ARENA_HEIGHT = 32
+ARENA_HEIGHT = 30
 CELL_SIZE = 25
 MARGIN = 60
 WIDTH = ARENA_WIDTH * CELL_SIZE + 2 * MARGIN  # 570
-HEIGHT = ARENA_HEIGHT * CELL_SIZE + 2 * MARGIN  # 920
+HEIGHT = ARENA_HEIGHT * CELL_SIZE + 2 * MARGIN  # 870
 
 # Colors
 GREEN = (34, 139, 34)
@@ -39,6 +39,10 @@ class Visualizer:
         self.env = ClashRoyalePZ()
         self.explosions = []  # (x, y, time_remaining)
 
+        # Assets
+        self.assets = {}
+        self.load_assets()
+
         # Load Model for Player 0
         self.model_0 = None
         if model_p0_path and os.path.exists(model_p0_path):
@@ -56,6 +60,20 @@ class Visualizer:
                 print(f"Loaded Player 1 from {model_p1_path}")
             except Exception as e:
                 print(f"Could not load Player 1: {e}")
+
+    def load_assets(self):
+        assets_dir = "assets"
+        # Simple mapping of troop and building names to filenames
+        image_assets = ["Knight", "Giant", "Archer", "Minion", "BabyDragon", "Cannon"]
+        for name in image_assets:
+            path = os.path.join(assets_dir, f"{name}.png")
+            if os.path.exists(path):
+                try:
+                    img = pygame.image.load(path).convert_alpha()
+                    # Scale to fit unit size (approx 24-30 pixels)
+                    self.assets[name] = pygame.transform.scale(img, (30, 30))
+                except Exception as e:
+                    print(f"Error loading {name} image: {e}")
 
     def world_to_screen(self, pos):
         x, y = pos
@@ -138,21 +156,19 @@ class Visualizer:
             self.screen.fill(GREEN)
 
             # Draw River and Bridges
-            river_y_world = 16.0
-            _, river_sy = self.world_to_screen((0, river_y_world))
+            # River spans Y=14.0 to Y=16.0
+            _, sy_16 = self.world_to_screen((0, 16.0))
             pygame.draw.rect(
-                self.screen, RIVER, (MARGIN, river_sy - 10, ARENA_WIDTH * CELL_SIZE, 20)
+                self.screen, RIVER, (MARGIN, sy_16, ARENA_WIDTH * CELL_SIZE, 50)
             )
 
-            # Left Bridge
-            lbx_world, lby_world = 3.5, 16.0
-            lsx, lsy = self.world_to_screen((lbx_world, lby_world))
-            pygame.draw.rect(self.screen, ROAD, (lsx - 20, lsy - 15, 40, 30))
+            # Left Bridge (Center at X=3.0, Y=15.0)
+            lsx, lsy = self.world_to_screen((3.0, 15.0))
+            pygame.draw.rect(self.screen, ROAD, (lsx - 25, lsy - 25, 50, 50))
 
-            # Right Bridge
-            rbx_world, rby_world = 14.5, 16.0
-            rsx, rsy = self.world_to_screen((rbx_world, rby_world))
-            pygame.draw.rect(self.screen, ROAD, (rsx - 20, rsy - 15, 40, 30))
+            # Right Bridge (Center at X=15.0, Y=15.0)
+            rsx, rsy = self.world_to_screen((15.0, 15.0))
+            pygame.draw.rect(self.screen, ROAD, (rsx - 25, rsy - 25, 50, 50))
 
             # Draw Towers
             for agent in ["player_0", "player_1"]:
@@ -161,7 +177,7 @@ class Visualizer:
                     if not tower.is_alive():
                         continue
                     tx, ty = self.world_to_screen(tower.position)
-                    size = 40 if tower.tower_type == "king" else 30
+                    size = 100 if tower.tower_type == "king" else 75
                     pygame.draw.rect(
                         self.screen, color, (tx - size // 2, ty - size // 2, size, size)
                     )
@@ -174,10 +190,93 @@ class Visualizer:
                 color_border = BLUE if agent == "player_0" else RED
                 for t in self.env.troops[agent]:
                     tx, ty = self.world_to_screen(t.position)
-                    color_body = GREY if "Knight" in t.name else DARK_GREEN
-                    pygame.draw.circle(self.screen, color_body, (tx, ty), 12)
-                    pygame.draw.circle(self.screen, color_border, (tx, ty), 12, 2)
-                    self.draw_health_bar(tx, ty, t.health, t.max_health)
+
+                    # Determine color based on troop name
+                    if "Knight" in t.name:
+                        color_body = GREY
+                    elif "Archer" in t.name:
+                        color_body = DARK_GREEN
+                    elif "Minion" in t.name:
+                        color_body = (100, 100, 200)  # Light Purple/Blue
+                    elif "Giant" in t.name:
+                        color_body = (160, 82, 45)  # Sienna
+                    elif "PEKKA" in t.name:
+                        color_body = (75, 0, 130)  # Indigo
+                    elif "HogRider" in t.name:
+                        color_body = (139, 69, 19)  # Brown
+                    elif "BabyDragon" in t.name:
+                        color_body = (124, 252, 0)  # Lawn Green
+                    elif "Wizard" in t.name:
+                        color_body = (65, 105, 225)  # Royal Blue
+                    elif "Musketeer" in t.name:
+                        color_body = (218, 112, 214)  # Orchid
+                    elif "Skeletons" in t.name:
+                        color_body = WHITE
+                    else:
+                        color_body = DARK_GREEN
+
+                    # Visuals for flying units
+                    if t.is_flying:
+                        # Draw unit with an upward offset
+                        v_tx, v_ty = tx, ty - 15
+                        # Optional: small shadow at the actual position
+                        pygame.draw.ellipse(
+                            self.screen, (50, 50, 50), (tx - 8, ty - 4, 16, 8)
+                        )
+                    else:
+                        v_tx, v_ty = tx, ty
+
+                    # Draw Image if available, else Circle
+                    if t.name in self.assets:
+                        img = self.assets[t.name]
+                        # Center the image
+                        self.screen.blit(img, (v_tx - 15, v_ty - 15))
+                        # Draw owner border
+                        pygame.draw.circle(self.screen, color_border, (v_tx, v_ty), 16, 2)
+                    else:
+                        pygame.draw.circle(self.screen, color_body, (v_tx, v_ty), 12)
+                        pygame.draw.circle(self.screen, color_border, (v_tx, v_ty), 12, 2)
+
+                    self.draw_health_bar(v_tx, v_ty, t.health, t.max_health)
+
+            # Draw Buildings
+            for agent in ["player_0", "player_1"]:
+                color_border = BLUE if agent == "player_0" else RED
+                for b in self.env.buildings[agent]:
+                    bx, by = self.world_to_screen(b.position)
+
+                    # Draw Image if available, else Square
+                    if b.name in self.assets:
+                        img = self.assets[b.name]
+                        # Center the image
+                        self.screen.blit(img, (bx - 15, by - 15))
+                        # Draw owner border
+                        pygame.draw.rect(
+                            self.screen,
+                            color_border,
+                            (bx - 18, by - 18, 36, 36),
+                            2,
+                        )
+                    else:
+                        if "Cannon" in b.name:
+                            color_body = GREY
+                        else:
+                            color_body = BLACK
+
+                        # Buildings are squares
+                        size = 24
+                        pygame.draw.rect(
+                            self.screen,
+                            color_body,
+                            (bx - size // 2, by - size // 2, size, size),
+                        )
+                        pygame.draw.rect(
+                            self.screen,
+                            color_border,
+                            (bx - size // 2, by - size // 2, size, size),
+                            2,
+                        )
+                    self.draw_health_bar(bx, by, b.health, b.max_health)
 
             # Draw Explosions
             for exp in self.explosions[:]:
@@ -239,7 +338,7 @@ class Visualizer:
                 self.screen.blit(over_text, (WIDTH // 2 - 60, HEIGHT // 2))
 
             pygame.display.flip()
-            self.clock.tick(30)
+            self.clock.tick(20)
 
         pygame.quit()
 
