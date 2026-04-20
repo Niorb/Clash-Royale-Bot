@@ -146,7 +146,8 @@ SPELL_STATS = {
         "damage": 688,
         "tower_damage": 207,
         "radius": 2.5,
-        "cost": 4.0
+        "cost": 4.0,
+        "travel_speed": 10.0
     }
 }
 
@@ -182,5 +183,9 @@ TROOP_TYPE_MAP = {
 
 BUILDING_TYPE_MAP = {
     "Cannon": 0.1
+}
+
+SPELL_TYPE_MAP = {
+    "Fireball": 0.1
 }
 

@@ -9,11 +9,12 @@ from card_stats import (
     BUILDING_STATS,
     BUILDING_TYPE_MAP,
     SPELL_STATS,
+    SPELL_TYPE_MAP,
     TOWER_STATS,
     TROOP_STATS,
     TROOP_TYPE_MAP,
 )
-from game_objects import Building, Tower, Troop
+from game_objects import Building, ProjectileSpell, Tower, Troop
 
 
 class ClashRoyalePZ(ParallelEnv):
@@ -36,15 +37,20 @@ class ClashRoyalePZ(ParallelEnv):
             agent: spaces.MultiDiscrete([9, 18, 30]) for agent in self.possible_agents
         }
 
-        # Observation Space:
-        # [elixir, self_king_hp, self_l_hp, self_r_hp, enemy_king_hp, enemy_l_hp, enemy_r_hp,
-        #  self_t1_type, self_t1_x, self_t1_y, self_t1_hp, ... (x10)
-        #  enemy_t1_type, enemy_t1_x, enemy_t1_y, enemy_t1_hp, ... (x10)
-        #  self_b1_type, self_b1_x, self_b1_y, self_b1_hp, ... (x2)
-        #  enemy_b1_type, enemy_b1_x, enemy_b1_y, enemy_b1_hp] ... (x2)
-        # Total: 1 + 3 + 3 + (10 * 4) + (10 * 4) + (2 * 4) + (2 * 4) = 103
+        # Observation Space: Dict with Entities and Vector
+        # entities: (40, 7) - [Active, Type, X, Y, HP, Enemy, Flying]
+        # vector: [Elixir]
         self.observation_spaces = {
-            agent: spaces.Box(low=0, high=1, shape=(103,), dtype=np.float32)
+            agent: spaces.Dict(
+                {
+                    "entities": spaces.Box(
+                        low=0.0, high=1.0, shape=(40, 7), dtype=np.float32
+                    ),
+                    "vector": spaces.Box(
+                        low=0.0, high=1.0, shape=(1,), dtype=np.float32
+                    ),
+                }
+            )
             for agent in self.possible_agents
         }
 
@@ -57,38 +63,6 @@ class ClashRoyalePZ(ParallelEnv):
         self.right_bridge_x = 15.0
 
         self.troop_type_map = TROOP_TYPE_MAP
-
-    def action_mask(self, agent):
-        """
-        Returns a boolean mask for the MultiDiscrete action space.
-        Space: [9, 18, 30]
-        Mask size: 9 + 18 + 30 = 57
-        """
-        mask = np.ones(57, dtype=bool)
-        current_elixir = self.elixir[agent]
-
-        # 1. Mask Card Types (0-8) based on Elixir
-        # Index 0 is "Nothing" (always valid)
-        # Type 1: Knight (3), 2: Archer (3), 3: Fireball (4), 4: Minion (3), 5: Giant (5), 6: Cannon (3), 7: BabyDragon (4), 8: Musketeer (4)
-        costs = [0, 3, 3, 4, 3, 5, 3, 4, 4]
-        for i, cost in enumerate(costs):
-            if current_elixir < cost:
-                mask[i] = False
-        
-        # 2. Mask Unit Cap (Cannot spawn if already 10 units)
-        if len(self.troops[agent]) >= 10:
-            for i in [1, 2, 4, 5, 7, 8]: # Troop types
-                mask[i] = False
-        
-        # 3. Mask Building Cap (Cannot spawn if already 2 buildings)
-        if len(self.buildings[agent]) >= 2:
-            mask[6] = False # Cannon
-
-        # Note: We are not masking X and Y here because MultiDiscrete masks are independent 
-        # in each dimension for SB3-Contrib. Masking a Y coordinate would mask it for ALL 
-        # card types, which is incorrect (Spells vs Troops).
-        
-        return mask
 
     def reset(self, seed=None, options=None):
         self.agents = self.possible_agents[:]
@@ -164,6 +138,8 @@ class ClashRoyalePZ(ParallelEnv):
         }
         self.troops = {"player_0": [], "player_1": []}
         self.buildings = {"player_0": [], "player_1": []}
+        self.spells = {"player_0": [], "player_1": []}
+        self.hits = []
 
         observations = {agent: self._get_obs(agent) for agent in self.agents}
         infos = {agent: {} for agent in self.agents}
@@ -172,66 +148,69 @@ class ClashRoyalePZ(ParallelEnv):
     def _get_obs(self, agent):
         enemy = "player_1" if agent == "player_0" else "player_0"
         is_p0 = agent == "player_0"
-        obs = np.zeros(103, dtype=np.float32)
 
-        # 1. Elixir (1)
-        obs[0] = self.elixir[agent] / self.max_elixir
+        # Entities array (Max 40, Feature Size 7)
+        # Features: [Active, Type, X, Y, HP, Enemy, Flying]
+        entities = np.zeros((40, 7), dtype=np.float32)
+        entity_count = 0
 
-        # 2. Own Towers HP (3)
-        for i, t in enumerate(self.towers[agent]):
-            obs[1 + i] = t.health / t.max_health
-
-        # 3. Enemy Towers HP (3)
-        for i, t in enumerate(self.towers[enemy]):
-            obs[4 + i] = t.health / t.max_health
-
-        def get_rel_coords(pos):
-            x, y = pos
+        def add_entity(obj, obj_type, is_enemy):
+            nonlocal entity_count
+            if entity_count >= 40:
+                return
+            
+            x, y = obj.position
             rx = x if is_p0 else (self.arena_width - x)
             ry = y if is_p0 else (self.arena_height - y)
-            return rx / self.arena_width, ry / self.arena_height
+            
+            entities[entity_count, 0] = 1.0  # Active
+            entities[entity_count, 1] = obj_type / 10.0 # Type (Normalized)
+            entities[entity_count, 2] = rx / self.arena_width
+            entities[entity_count, 3] = ry / self.arena_height
+            
+            if hasattr(obj, "health") and hasattr(obj, "max_health"):
+                entities[entity_count, 4] = obj.health / obj.max_health
+            else:
+                entities[entity_count, 4] = 1.0  # Spells or other non-destructible entities
+                
+            entities[entity_count, 5] = 1.0 if is_enemy else 0.0
+            entities[entity_count, 6] = 1.0 if (hasattr(obj, "is_flying") and obj.is_flying) else 0.0
+            
+            entity_count += 1
 
-        # 4. Own Troops (40)
-        self_troops = self.troops[agent]
-        for i in range(min(len(self_troops), 10)):
-            rx, ry = get_rel_coords(self_troops[i].position)
-            idx = 7 + i * 4
-            obs[idx] = self.troop_type_map.get(self_troops[i].name, 0.0)
-            obs[idx + 1] = rx
-            obs[idx + 2] = ry
-            obs[idx + 3] = self_troops[i].health / self_troops[i].max_health
+        # 1. Towers
+        for t in self.towers[agent]:
+            if t.is_alive():
+                add_entity(t, 9 if t.tower_type == "king" else 10, False)
+        for t in self.towers[enemy]:
+            if t.is_alive():
+                add_entity(t, 9 if t.tower_type == "king" else 10, True)
 
-        # 5. Enemy Troops (40)
-        enemy_troops = self.troops[enemy]
-        for i in range(min(len(enemy_troops), 10)):
-            rx, ry = get_rel_coords(enemy_troops[i].position)
-            idx = 47 + i * 4
-            obs[idx] = self.troop_type_map.get(enemy_troops[i].name, 0.0)
-            obs[idx + 1] = rx
-            obs[idx + 2] = ry
-            obs[idx + 3] = enemy_troops[i].health / enemy_troops[i].max_health
+        # 2. Troops
+        for t in self.troops[agent]:
+            # Action types: 1:Knight, 2:Archer, 4:Minion, 5:Giant, 7:BabyDragon, 8:Musketeer
+            type_map = {"Knight": 1, "Archer": 2, "Minion": 4, "Giant": 5, "BabyDragon": 7, "Musketeer": 8}
+            add_entity(t, type_map.get(t.name, 0), False)
+        for t in self.troops[enemy]:
+            type_map = {"Knight": 1, "Archer": 2, "Minion": 4, "Giant": 5, "BabyDragon": 7, "Musketeer": 8}
+            add_entity(t, type_map.get(t.name, 0), True)
 
-        # 6. Own Buildings (8)
-        self_buildings = self.buildings[agent]
-        for i in range(min(len(self_buildings), 2)):
-            rx, ry = get_rel_coords(self_buildings[i].position)
-            idx = 87 + i * 4
-            obs[idx] = BUILDING_TYPE_MAP.get(self_buildings[i].name, 0.0)
-            obs[idx + 1] = rx
-            obs[idx + 2] = ry
-            obs[idx + 3] = self_buildings[i].health / self_buildings[i].max_health
+        # 3. Buildings
+        for b in self.buildings[agent]:
+            add_entity(b, 6, False) # Cannon
+        for b in self.buildings[enemy]:
+            add_entity(b, 6, True)
 
-        # 7. Enemy Buildings (8)
-        enemy_buildings = self.buildings[enemy]
-        for i in range(min(len(enemy_buildings), 2)):
-            rx, ry = get_rel_coords(enemy_buildings[i].position)
-            idx = 95 + i * 4
-            obs[idx] = BUILDING_TYPE_MAP.get(enemy_buildings[i].name, 0.0)
-            obs[idx + 1] = rx
-            obs[idx + 2] = ry
-            obs[idx + 3] = enemy_buildings[i].health / enemy_buildings[i].max_health
+        # 4. Spells
+        for s in self.spells[agent]:
+            add_entity(s, 3, False) # Fireball
+        for s in self.spells[enemy]:
+            add_entity(s, 3, True)
 
-        return obs
+        # Vector: Elixir (1)
+        vector = np.array([self.elixir[agent] / self.max_elixir], dtype=np.float32)
+
+        return {"entities": entities, "vector": vector}
 
     def step(self, actions):
         rewards = {"player_0": -0.001, "player_1": -0.001}
@@ -241,6 +220,7 @@ class ClashRoyalePZ(ParallelEnv):
 
         self.current_step += 1
         self.time += self.dt
+        self.hits = []
 
         # 1. Elixir Regen and Building Decay
         for agent in self.possible_agents:
@@ -260,8 +240,6 @@ class ClashRoyalePZ(ParallelEnv):
             enemy = "player_1" if agent == "player_0" else "player_0"
 
             # Clamp and convert coordinates
-            # player_0 plays on Y [0, 13.5], player_1 on Y [16.5, 29]
-            # (Buffer of 0.5 tiles to prevent spawning on the hard river edge)
             if action_type in [1, 2, 4, 5, 6, 7, 8]:  # Troops and Buildings
                 if agent == "player_0":
                     actual_y = min(float(ay), 13.5)
@@ -272,8 +250,11 @@ class ClashRoyalePZ(ParallelEnv):
                 actual_x, actual_y = float(ax), float(ay)
 
             actual_pos = (actual_x, actual_y)
+            spawn_success = False
 
-            if (
+            if action_type == 0:
+                spawn_success = True  # Doing nothing is always successful
+            elif (
                 action_type == 1
                 and self.elixir[agent] >= TROOP_STATS["Knight"]["cost"]
                 and len(self.troops[agent]) < 10
@@ -296,6 +277,7 @@ class ClashRoyalePZ(ParallelEnv):
                         splash_radius=stats.get("splash_radius", 0.0),
                     )
                 )
+                spawn_success = True
             elif (
                 action_type == 2
                 and self.elixir[agent] >= TROOP_STATS["Archer"]["cost"]
@@ -323,6 +305,7 @@ class ClashRoyalePZ(ParallelEnv):
                             splash_radius=stats.get("splash_radius", 0.0),
                         )
                     )
+                spawn_success = True
             elif (
                 action_type == 4
                 and self.elixir[agent] >= TROOP_STATS["Minion"]["cost"]
@@ -351,6 +334,7 @@ class ClashRoyalePZ(ParallelEnv):
                             splash_radius=stats.get("splash_radius", 0.0),
                         )
                     )
+                spawn_success = True
             elif (
                 action_type == 5
                 and self.elixir[agent] >= TROOP_STATS["Giant"]["cost"]
@@ -374,6 +358,7 @@ class ClashRoyalePZ(ParallelEnv):
                         splash_radius=stats.get("splash_radius", 0.0),
                     )
                 )
+                spawn_success = True
             elif (
                 action_type == 6
                 and self.elixir[agent] >= BUILDING_STATS["Cannon"]["cost"]
@@ -395,6 +380,7 @@ class ClashRoyalePZ(ParallelEnv):
                         targets=stats["targets"],
                     )
                 )
+                spawn_success = True
             elif (
                 action_type == 7
                 and self.elixir[agent] >= TROOP_STATS["BabyDragon"]["cost"]
@@ -418,6 +404,7 @@ class ClashRoyalePZ(ParallelEnv):
                         splash_radius=stats.get("splash_radius", 0.0),
                     )
                 )
+                spawn_success = True
             elif (
                 action_type == 8
                 and self.elixir[agent] >= TROOP_STATS["Musketeer"]["cost"]
@@ -441,25 +428,51 @@ class ClashRoyalePZ(ParallelEnv):
                         splash_radius=stats.get("splash_radius", 0.0),
                     )
                 )
+                spawn_success = True
             elif (
-                action_type == 3
-                and self.elixir[agent] >= SPELL_STATS["Fireball"]["cost"]
+                action_type == 3 and self.elixir[agent] >= SPELL_STATS["Fireball"]["cost"]
             ):
                 stats = SPELL_STATS["Fireball"]
                 self.elixir[agent] -= stats["cost"]
-                # Fireball 2D logic
-                for et in self.towers[enemy]:
-                    if (
-                        math.hypot(et.position[0] - actual_x, et.position[1] - actual_y)
-                        <= stats["radius"]
-                    ):
-                        et.take_damage(stats["tower_damage"])
-                for et in self.troops[enemy]:
-                    if (
-                        math.hypot(et.position[0] - actual_x, et.position[1] - actual_y)
-                        <= stats["radius"]
-                    ):
-                        et.take_damage(stats["damage"])
+                king_tower = self.towers[agent][0]
+                start_pos = king_tower.position
+                self.spells[agent].append(
+                    ProjectileSpell(
+                        agent,
+                        "Fireball",
+                        start_pos,
+                        actual_pos,
+                        stats["damage"],
+                        stats["tower_damage"],
+                        stats["radius"],
+                        stats["travel_speed"],
+                    )
+                )
+                spawn_success = True
+
+            # If action was requested but failed (e.g. no spawn happened), apply penalty
+            if not spawn_success:
+                rewards[agent] -= 0.05
+
+        # 2.5 Update Spells
+        for agent in self.possible_agents:
+            enemy = "player_1" if agent == "player_0" else "player_0"
+            for s in self.spells[agent]:
+                s.move(self.dt)
+                if s.is_done:
+                    # Apply damage
+                    fx, fy = s.target_pos
+                    self.hits.append(s.target_pos)
+                    for et in self.towers[enemy]:
+                        if math.hypot(et.position[0] - fx, et.position[1] - fy) <= s.radius:
+                            et.take_damage(s.tower_damage)
+                    for et in self.troops[enemy]:
+                        if math.hypot(et.position[0] - fx, et.position[1] - fy) <= s.radius:
+                            et.take_damage(s.damage)
+                    for eb in self.buildings[enemy]:
+                        if math.hypot(eb.position[0] - fx, eb.position[1] - fy) <= s.radius:
+                            eb.take_damage(s.damage)
+            self.spells[agent] = [s for s in self.spells[agent] if not s.is_done]
 
         # 3. Tower and Building Defense Logic (2D)
         for agent in self.possible_agents:

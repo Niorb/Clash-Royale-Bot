@@ -3,7 +3,8 @@ import sys
 
 import numpy as np
 import pygame
-from stable_baselines3 import PPO
+import torch
+from sb3_contrib import RecurrentPPO
 
 from game_objects import Tower, Troop
 from pz_env import ClashRoyalePZ
@@ -39,6 +40,9 @@ class Visualizer:
         self.env = ClashRoyalePZ()
         self.explosions = []  # (x, y, time_remaining)
 
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Visualizer using device: {self.device}")
+
         # Assets
         self.assets = {}
         self.load_assets()
@@ -47,24 +51,48 @@ class Visualizer:
         self.model_0 = None
         if model_p0_path and os.path.exists(model_p0_path):
             try:
-                self.model_0 = PPO.load(model_p0_path, device="cpu")
-                print(f"Loaded Player 0 from {model_p0_path}")
+                self.model_0 = RecurrentPPO.load(model_p0_path, device=self.device)
+                print(f"Loaded Player 0 from {model_p0_path} (RecurrentPPO)")
             except Exception as e:
-                print(f"Could not load Player 0: {e}")
+                print(f"Could not load Player 0 as RecurrentPPO: {e}")
+                print("Checking if it is a standard PPO model...")
+                try:
+                    from stable_baselines3 import PPO
+
+                    self.model_0 = PPO.load(model_p0_path, device=self.device)
+                    print(f"Loaded Player 0 from {model_p0_path} (PPO)")
+                except Exception as e2:
+                    print(f"Could not load Player 0 as standard PPO either: {e2}")
 
         # Load Model for Player 1
         self.model_1 = None
         if model_p1_path and os.path.exists(model_p1_path):
             try:
-                self.model_1 = PPO.load(model_p1_path, device="cpu")
-                print(f"Loaded Player 1 from {model_p1_path}")
+                self.model_1 = RecurrentPPO.load(model_p1_path, device=self.device)
+                print(f"Loaded Player 1 from {model_p1_path} (RecurrentPPO)")
             except Exception as e:
-                print(f"Could not load Player 1: {e}")
+                print(f"Could not load Player 1 as RecurrentPPO: {e}")
+                print("Checking if it is a standard PPO model...")
+                try:
+                    from stable_baselines3 import PPO
+
+                    self.model_1 = PPO.load(model_p1_path, device=self.device)
+                    print(f"Loaded Player 1 from {model_p1_path} (PPO)")
+                except Exception as e2:
+                    print(f"Could not load Player 1 as standard PPO either: {e2}")
 
     def load_assets(self):
         assets_dir = "assets"
         # Simple mapping of troop and building names to filenames
-        image_assets = ["Knight", "Giant", "Archer", "Minion", "BabyDragon", "Cannon"]
+        image_assets = [
+            "Knight",
+            "Giant",
+            "Archer",
+            "Minion",
+            "BabyDragon",
+            "Cannon",
+            "Musketeer",
+        ]
         for name in image_assets:
             path = os.path.join(assets_dir, f"{name}.png")
             if os.path.exists(path):
@@ -99,6 +127,13 @@ class Visualizer:
         game_over = False
         cum_rewards = {"player_0": 0.0, "player_1": 0.0}
 
+        # Recurrent state tracking
+        lstm_states = {"player_0": None, "player_1": None}
+        episode_starts = {
+            "player_0": np.ones((1,), dtype=bool),
+            "player_1": np.ones((1,), dtype=bool),
+        }
+
         while running:
             # Default actions: [Nothing, 0, 0]
             actions = {"player_0": [0, 0, 0], "player_1": [0, 0, 0]}
@@ -113,41 +148,64 @@ class Visualizer:
                         game_over = False
                         self.explosions = []
                         cum_rewards = {"player_0": 0.0, "player_1": 0.0}
+                        lstm_states = {"player_0": None, "player_1": None}
+                        episode_starts = {
+                            "player_0": np.ones((1,), dtype=bool),
+                            "player_1": np.ones((1,), dtype=bool),
+                        }
 
             # 2. Step Environment (if not game over)
             if not game_over:
                 # Agent 0 control
                 if self.model_0:
                     try:
-                        pred, _ = self.model_0.predict(
-                            obs_dict["player_0"], deterministic=True
-                        )
+                        if isinstance(self.model_0, RecurrentPPO):
+                            pred, lstm_states["player_0"] = self.model_0.predict(
+                                obs_dict["player_0"],
+                                state=lstm_states["player_0"],
+                                episode_start=episode_starts["player_0"],
+                                deterministic=True,
+                            )
+                            episode_starts["player_0"] = np.zeros((1,), dtype=bool)
+                        else:
+                            pred, _ = self.model_0.predict(
+                                obs_dict["player_0"], deterministic=True
+                            )
                         actions["player_0"] = pred
-                    except:
-                        pass  # Space mismatch probably
+                    except Exception as e:
+                        # print(f"P0 Prediction Error: {e}")
+                        pass
 
                 # Agent 1 control
                 if self.model_1:
                     try:
-                        pred, _ = self.model_1.predict(
-                            obs_dict["player_1"], deterministic=True
-                        )
+                        if isinstance(self.model_1, RecurrentPPO):
+                            pred, lstm_states["player_1"] = self.model_1.predict(
+                                obs_dict["player_1"],
+                                state=lstm_states["player_1"],
+                                episode_start=episode_starts["player_1"],
+                                deterministic=True,
+                            )
+                            episode_starts["player_1"] = np.zeros((1,), dtype=bool)
+                        else:
+                            pred, _ = self.model_1.predict(
+                                obs_dict["player_1"], deterministic=True
+                            )
                         actions["player_1"] = pred
-                    except:
+                    except Exception as e:
+                        # print(f"P1 Prediction Error: {e}")
                         pass
-
-                # Render explosion indicators
-                for agent, action in actions.items():
-                    act_type = action[0]
-                    if act_type == 3 and self.env.elixir[agent] >= 4.0:
-                        ex, ey = self.world_to_screen((action[1], action[2]))
-                        self.explosions.append([ex, ey, 10])
 
                 obs_dict, rewards, terminations, truncations, infos = self.env.step(
                     actions
                 )
                 for agent in ["player_0", "player_1"]:
                     cum_rewards[agent] += rewards[agent]
+
+                # Handle explosions from hits
+                for hit_pos in self.env.hits:
+                    ex, ey = self.world_to_screen(hit_pos)
+                    self.explosions.append([ex, ey, 10])
 
                 if any(terminations.values()) or any(truncations.values()):
                     game_over = True
@@ -232,10 +290,14 @@ class Visualizer:
                         # Center the image
                         self.screen.blit(img, (v_tx - 15, v_ty - 15))
                         # Draw owner border
-                        pygame.draw.circle(self.screen, color_border, (v_tx, v_ty), 16, 2)
+                        pygame.draw.circle(
+                            self.screen, color_border, (v_tx, v_ty), 16, 2
+                        )
                     else:
                         pygame.draw.circle(self.screen, color_body, (v_tx, v_ty), 12)
-                        pygame.draw.circle(self.screen, color_border, (v_tx, v_ty), 12, 2)
+                        pygame.draw.circle(
+                            self.screen, color_border, (v_tx, v_ty), 12, 2
+                        )
 
                     self.draw_health_bar(v_tx, v_ty, t.health, t.max_health)
 
@@ -277,6 +339,16 @@ class Visualizer:
                             2,
                         )
                     self.draw_health_bar(bx, by, b.health, b.max_health)
+
+            # Draw Spells
+            for agent in ["player_0", "player_1"]:
+                color = BLUE if agent == "player_0" else RED
+                for s in self.env.spells[agent]:
+                    fx, fy = self.world_to_screen(s.position)
+                    # Use different colors/sizes based on spell name if needed
+                    spell_color = ORANGE if s.name == "Fireball" else (255, 255, 0)
+                    pygame.draw.circle(self.screen, spell_color, (fx, fy), 15)
+                    pygame.draw.circle(self.screen, color, (fx, fy), 15, 2)
 
             # Draw Explosions
             for exp in self.explosions[:]:

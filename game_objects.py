@@ -142,3 +142,48 @@ class Building:
         self.health -= amount
         if self.health < 0:
             self.health = 0
+
+
+class ProjectileSpell:
+    def __init__(
+        self,
+        owner_id,
+        name,
+        start_pos,
+        target_pos,
+        damage,
+        tower_damage,
+        radius,
+        speed,
+    ):
+        self.id = str(uuid.uuid4())
+        self.owner_id = owner_id
+        self.name = name
+        self.position = list(start_pos)
+        self.target_pos = list(target_pos)
+        self.damage = damage
+        self.tower_damage = tower_damage
+        self.radius = radius
+        self.speed = speed
+        self.is_done = False
+
+    def move(self, dt):
+        tx, ty = self.target_pos
+        px, py = self.position
+
+        dx = tx - px
+        dy = ty - py
+        dist = math.hypot(dx, dy)
+
+        if dist == 0:
+            self.is_done = True
+            return
+
+        move_dist = self.speed * dt
+        if move_dist >= dist:
+            self.position = [tx, ty]
+            self.is_done = True
+        else:
+            ratio = move_dist / dist
+            self.position[0] += dx * ratio
+            self.position[1] += dy * ratio
