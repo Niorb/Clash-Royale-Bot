@@ -1,7 +1,11 @@
-gymnasium==1.2.3
+gymnasium==1.0.0
 numpy>=2.0.0
 stable-baselines3==2.5.0
+pygame>=2.6.0
 matplotlib>=3.10.0
 shimmy>=2.0.0
-# Add PyTorch specifically for Stable Baselines3
-torch>=2.0.0
+# SB3 2.5.0 requires PyTorch 2.3+
+torch>=2.3.0
+tensorboard>=2.17.0
+pettingzoo>=1.24.3
+supersuit>=3.9.2
